@@ -202,8 +202,9 @@ class ApplyMask(DirectModule):
             raise ValueError(f"Key {self.sampling_mask_key} corresponding to `sampling_mask_key` not found in sample.")
         sampling_mask = sample[self.sampling_mask_key]
 
-        target_kspace, _ = T.apply_mask(input_kspace, sampling_mask)
+        target_kspace, _, full_kspace = T.apply_mask(input_kspace, sampling_mask)
         sample[self.target_kspace_key] = target_kspace
+        sample['full_kspace'] = full_kspace
         return sample
 
 

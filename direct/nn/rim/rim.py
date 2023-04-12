@@ -317,6 +317,16 @@ class RIM(nn.Module):
                 NormConv2dGRU(**conv_unit_params) if normalized else Conv2dGRU(**conv_unit_params)  # type: ignore
             )
 
+        # TODO Take into account data size and batch size, remove hardcoded vals
+        self.adaptive_sampler = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(74120, 5000),
+            nn.Linear(5000, 1000),
+            nn.Linear(1000, 5000),
+            nn.Linear(5000, 37060),
+            nn.Sigmoid()
+        )
+
         self.length = length
         self.depth = depth
 
@@ -337,10 +347,47 @@ class RIM(nn.Module):
         # shape (N, height, width, complex=2)
         return input_image
 
+    def apply_mask_to_image(self, mask, full_kspace):
+        print('apply mask here')
+
+        # Masks are applied in kspace. Apply the mask and then get image with ifft.
+        masked_kspace = torch.where(mask == 0, torch.tensor([0.0], dtype=full_kspace.dtype, device=full_kspace.device), full_kspace)
+
+        image = self.backward_operator(masked_kspace, dim=self._spatial_dims).sum(self._coil_dim)
+        return image
+
+
+
+    def update_sampling_mask(self, sampling_mask, adaptive_sampler_output, num_points_to_pick=2000):
+        # mask_datapoints_before = torch.count_nonzero(sampling_mask)
+
+        # Set adaptive_sampler output to <= zero where mask is already true
+        # to prevent picking the same data point twice
+        adaptive_sampler_output -= sampling_mask.int().float().flatten()
+
+        selected_datapoints = torch.topk(adaptive_sampler_output, num_points_to_pick)
+        nth_highest_val = selected_datapoints.values[0, num_points_to_pick - 1]
+        new_mask = adaptive_sampler_output.ge(nth_highest_val)
+
+        # TODO: use data size, batch size
+        new_mask = new_mask.reshape(1,1,218,170,1)
+
+        # Assert that the two masks overlap, i.e. no point sampled twice
+        # intersection = new_mask.logical_and(sampling_mask)
+        # assert torch.all(intersection == False)
+
+        sampling_mask = torch.logical_or(new_mask, sampling_mask)
+
+        # Assert that the correct amount of samples were added
+        # assert torch.count_nonzero(sampling_mask) == mask_datapoints_before + num_points_to_pick
+
+        return sampling_mask
+
     def forward(
         self,
         input_image: torch.Tensor,
         masked_kspace: torch.Tensor,
+        full_kspace: torch.Tensor,
         sampling_mask: torch.Tensor,
         sensitivity_map: Optional[torch.Tensor] = None,
         previous_state: Optional[torch.Tensor] = None,
@@ -415,6 +462,11 @@ class RIM(nn.Module):
 
         cell_outputs = []
         intermediate_image = input_image  # shape (N, complex=2, height, width)
+
+        # Perform the adaptive sampling for this step
+        adaptive_sampler_output = self.adaptive_sampler(input_image)
+        sampling_mask = self.update_sampling_mask(sampling_mask,  adaptive_sampler_output)
+        input_image = self.apply_mask_to_image(sampling_mask, full_kspace)
 
         for cell_idx in range(self.length):
             cell = self.cell_list[cell_idx] if self.no_parameter_sharing else self.cell_list[0]

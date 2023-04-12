@@ -608,7 +608,7 @@ def apply_mask(
     if not return_mask:
         return masked_kspace
 
-    return masked_kspace, mask
+    return masked_kspace, mask, kspace
 
 
 def tensor_to_complex_numpy(data: torch.Tensor) -> np.ndarray:
